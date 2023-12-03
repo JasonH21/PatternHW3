@@ -115,6 +115,7 @@ def get_train_val_dataset(opts):
 
 def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
     """Do validation and return specified samples"""
+    model.eval() 
     metrics.reset()
     ret_samples = []
     if opts.save_val_results:
@@ -170,8 +171,8 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
 
 def main():
     opts = get_argparser().parse_args()
-    # TODO: you should fill the num_classes here. Don't forget to add the background class
-    opts.num_classes = 
+
+    opts.num_classes = 21
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -196,7 +197,18 @@ def main():
           ("VOC", len(train_dst), len(val_dst)))
 
     # Set up model (all models are 'constructed at network.modeling)
+    #model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
+    #model.to(device)
     model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
+    
+    backbone_params = [p for n, p in model.named_parameters() if 'backbone' in n]
+    other_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
+    optimizer = torch.optim.SGD([
+        {'params': backbone_params, 'lr': opts.lr * 0.1},
+        {'params': other_params, 'lr': opts.lr}
+    ], momentum=0.9, weight_decay=opts.weight_decay)
+    
+    
     if opts.separable_conv and 'plus' in opts.model:
         network.convert_to_separable_conv(model.classifier)
     utils.set_bn_momentum(model.backbone, momentum=0.01)
@@ -208,21 +220,26 @@ def main():
     # Set up optimizer 
     # TODO Problem 3.1
     # please check argument parser for learning rate reference.
-    raise NotImplementedError
-    optimizer = 
 
-    # Set up Learning Rate Policy
-    # TODO Problem 3.1
-    # please check argument parser for learning rate policy.
-    raise NotImplementedError
-    scheduler = 
+    criterion = nn.CrossEntropyLoss(ignore_index=255)  # or any other loss as per your requirement
 
-    # Set up criterion 
-    # TODO Problem 3.1
-    # please check argument parser for loss function.
-    # in 3.3, please use CrossEntropyLoss and in 3.4, use the custom loss defined in utils/loss.py
-    raise NotImplementedError
-    criterion = 
+
+    if opts.lr_policy == 'poly':
+        lambda_poly = lambda epoch: pow((1 - epoch / opts.total_itrs), 0.9)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_poly)
+    else:  # step
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.step_size, gamma=0.1)
+
+
+#  # Assuming train_dst is your training dataset
+#     total_train_samples = len(train_dst)
+#     iters_per_epoch = total_train_samples // opts.batch_size
+#     step_size_in_epochs = 1000 // iters_per_epoch
+
+#     # Set up the StepLR learning rate scheduler
+#     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size_in_epochs, gamma=0.9)
+
+
     
     def save_ckpt(path):
         """ save current model
@@ -272,53 +289,39 @@ def main():
 
     interval_loss = 0
     mIoU_per_epoch = []
-    while True:  # cur_itrs < opts.total_itrs:
-        # =====  Train  =====
+    while cur_itrs < opts.total_itrs:
         model.train()
         cur_epochs += 1
-        for (images, labels) in train_loader:
+        for images, labels in train_loader:
             cur_itrs += 1
 
             images = images.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
 
-            # TODO Please finish the main training loop and record the mIoU
-            # Problem 3.3 & Problem 3.4
-            raise NotImplementedError
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-            np_loss = loss.detach().cpu().numpy()
-            interval_loss += np_loss
-
-            if (cur_itrs) % 10 == 0:
-                interval_loss = interval_loss / 10
+            if cur_itrs % opts.print_interval == 0:
                 print("Epoch %d, Itrs %d/%d, Loss=%f" %
-                      (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
-                interval_loss = 0.0
-            
+                      (cur_epochs, cur_itrs, opts.total_itrs, loss.item()))
+
+            if cur_itrs % opts.val_interval == 0:
+                print("Validation...")
+                val_score, _ = validate(opts, model, val_loader, device, metrics)
+                print(metrics.to_str(val_score))
+                mIoU_per_epoch.append(val_score['Mean IoU'])
+                if val_score['Mean IoU'] > best_score:  # Save best model
+                    best_score = val_score['Mean IoU']
+                    save_ckpt('checkpoints/best_%s_%s_os%d.pth' % (opts.model, "VOC", opts.output_stride))
+
             scheduler.step()
 
-            if cur_itrs >= opts.total_itrs:
-                return
+        save_ckpt('checkpoints/latest_%s_%s_os%d.pth' % (opts.model, "VOC", opts.output_stride))
 
-        # evaluation after each epoch
-        save_ckpt('checkpoints/latest_%s_%s_os%d.pth' %
-                    (opts.model, "VOC", opts.output_stride))
-    
-        print("validation...")
-        model.eval()
-        val_score, ret_samples = validate(
-            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics,
-            ret_samples_ids=vis_sample_id)
-
-        print(metrics.to_str(val_score))
-        # TODO record mIoU with mIoU_per_epoch 
-        raise NotImplementedError
-
-        if val_score['Mean IoU'] > best_score:  # save best model
-            best_score = val_score['Mean IoU']
-            print("new best mIOU: ", best_score)
-            save_ckpt('checkpoints/best_%s_%s_os%d.pth' %
-                        (opts.model, "VOC", opts.output_stride))
+    print("Training Completed")
 
 if __name__ == '__main__':
     main()

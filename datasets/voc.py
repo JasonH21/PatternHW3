@@ -5,7 +5,7 @@ import collections
 import torch.utils.data as data
 import shutil
 import numpy as np
-
+from collections import Counter
 from PIL import Image
 
 
@@ -73,7 +73,6 @@ class VOCSegmentation(data.Dataset):
         self.images = [os.path.join(image_dir, x + ".jpg") for x in file_names]
         self.masks = [os.path.join(mask_dir, x + ".png") for x in file_names]
         assert (len(self.images) == len(self.masks))
-
     def __getitem__(self, index):
         """
         Args:
@@ -86,17 +85,33 @@ class VOCSegmentation(data.Dataset):
             2. read the mask (png) as a single-channel PIL image.
             3. perform the necessary transforms on image & mask.
         """
-        # TODO Problem 1.1
-        # =================================================
-        raise NotImplementedError
+        img_path = os.path.join(self.image_dir, f"img_{index}.jpg") 
+        image = Image.open(img_path).convert('RGB')
+
+        mask_path = os.path.join(self.mask_dir, f"mask_{index}.png")  
+        mask = Image.open(mask_path).convert('L')  
+
+        if self.transforms:
+            image = self.transforms(image)
+            mask = self.transforms(mask)
+
+        return image, mask
 
     def __len__(self):
         return len(self.images)
 
     @classmethod
     def decode_target(cls, mask):
-        """decode semantic mask to RGB image for visualization, using the color map"""
-        # TODO Problem 1.1
-        # =================================================
-        raise NotImplementedError
-        # =================================================
+        """Decode semantic mask to RGB image for visualization, using the color map"""
+        mask = np.array(mask)
+        rgb_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
+
+        for label, color in enumerate(cls.cmap):
+            mask_label = mask == label
+            rgb_mask[mask_label] = color
+
+        return Image.fromarray(rgb_mask)
+
+
+
+
